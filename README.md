@@ -392,9 +392,9 @@ This project is licensed under the Apache License 2.0 - see the LICENSE file for
 
 ## 📞 Support
 
-- 🐛 [Report a Bug](https://github.com/yourusername/kafka-perf-test/issues)
-- 💡 [Request a Feature](https://github.com/yourusername/kafka-perf-test/issues)
-- 📖 [Documentation](https://github.com/yourusername/kafka-perf-test/wiki)
+- 🐛 [Report a Bug](https://github.com/mordp1/kafka-perf-test/issues)
+- 💡 [Request a Feature](https://github.com/mordp1/kafka-perf-test/issues)
+- 📖 [Documentation](https://github.com/mordp1/kafka-perf-test/wiki)
 
 ---
 

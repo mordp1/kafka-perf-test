@@ -356,7 +356,7 @@ generate_html_report() {
         <div class="chart" id="percentileChart"></div>
     </div>
     <script>
-        const csvData = `CSV_DATA_PLACEHOLDER`;
+CSV_DATA_PLACEHOLDER
 
         function parseCSV() {
             const lines = csvData.trim().split('\n');
@@ -442,12 +442,14 @@ HTMLEOF
     local tmp="${html_file}.tmp"
     awk -v csvfile="$RESULT_FILE" '
         /CSV_DATA_PLACEHOLDER/ {
+            printf "        const csvData = `"
             while ((getline line < csvfile) > 0) {
                 gsub(/`/, "\\`", line)
                 gsub(/\$/, "\\$", line)
                 print line
             }
             close(csvfile)
+            printf "`;\n"
             next
         }
         { print }

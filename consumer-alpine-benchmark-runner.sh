@@ -9,7 +9,7 @@ set -e
 # Configuration
 BOOTSTRAP_SERVERS="${BOOTSTRAP_SERVERS:-localhost:29092,localhost:39092,localhost:49092}"
 KAFKA_BIN="${KAFKA_BIN:-}"
-NUM_MESSAGES="${NUM_MESSAGES:-1000000}"
+NUM_MESSAGES="${NUM_MESSAGES:-100000}"
 CLIENT_CONFIG="${CLIENT_CONFIG:-}"  # Optional: path to consumer.properties file
 RESULTS_DIR="./benchmark_results"
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)

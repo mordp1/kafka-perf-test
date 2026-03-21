@@ -7,7 +7,7 @@ set -e
 
 BOOTSTRAP_SERVERS="${BOOTSTRAP_SERVERS:-localhost:29092,localhost:39092,localhost:49092}"
 KAFKA_BIN="${KAFKA_BIN:-}"
-
+CLIENT_CONFIG="${CLIENT_CONFIG:-}"
 # Colors
 GREEN='\033[0;32m'
 BLUE='\033[0;34m'
@@ -46,6 +46,8 @@ create_topic() {
     
     $KAFKA_TOPICS --create \
         --bootstrap-server "$BOOTSTRAP_SERVERS" \
+	    --command-config "$CLIENT_CONFIG" \
+        --if-not-exists \
         --topic "$topic" \
         --partitions "$partitions" \
         --replication-factor "$replication" \

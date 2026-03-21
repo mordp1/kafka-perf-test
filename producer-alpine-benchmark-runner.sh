@@ -9,9 +9,10 @@ set -e
 # Configuration
 BOOTSTRAP_SERVERS="${BOOTSTRAP_SERVERS:-localhost:29092,localhost:39092,localhost:49092}"
 KAFKA_BIN="${KAFKA_BIN:-}"
-NUM_RECORDS="${NUM_RECORDS:-1000000}"
+NUM_RECORDS="${NUM_RECORDS:-100000}"
 RECORD_SIZE="${RECORD_SIZE:-1024}"
 CLIENT_CONFIG="${CLIENT_CONFIG:-}"  # Optional: path to producer.properties file
+PRINT_METRICS="${PRINT_METRICS:-true}"  # Print JMX metrics (includes throttle info)
 RESULTS_DIR="./benchmark_results"
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 RESULT_FILE="${RESULTS_DIR}/results_${TIMESTAMP}.csv"
@@ -141,7 +142,7 @@ find_kafka_bin() {
 init_results_dir() {
     mkdir -p "$RESULTS_DIR"
     mkdir -p "$RAW_DIR"
-    printf "timestamp,topic,partitions,replication_factor,num_records,record_size,throughput_mb_sec,avg_latency_ms,max_latency_ms,p50_latency_ms,p95_latency_ms,p99_latency_ms,p999_latency_ms,records_per_sec\n" > "$RESULT_FILE"
+    printf "timestamp,topic,partitions,replication_factor,num_records,record_size,throughput_mb_sec,avg_latency_ms,max_latency_ms,p50_latency_ms,p95_latency_ms,p99_latency_ms,p999_latency_ms,records_per_sec,throttle_avg_ms,throttle_max_ms\n" > "$RESULT_FILE"
 }
 
 # ---------------------------------------------------------------
@@ -194,6 +195,25 @@ parse_producer_output() {
             if ($i == "ms" && ($(i+1) == "99.9th."|| $(i+1) == "99.9th")) p999 = $(i-1)
         }
     }
+    # Parse throttle metrics from --print-metrics output
+    # Matches lines like: producer-metrics:produce-throttle-time-avg : 0.000
+    /produce-throttle-time-avg/ {
+        for (i = 1; i <= NF; i++) {
+            if ($i ~ /produce-throttle-time-avg/) {
+                # value is typically the last field or after ":"
+                throttle_avg = $NF
+                gsub(/[^0-9.]/, "", throttle_avg)
+            }
+        }
+    }
+    /produce-throttle-time-max/ {
+        for (i = 1; i <= NF; i++) {
+            if ($i ~ /produce-throttle-time-max/) {
+                throttle_max = $NF
+                gsub(/[^0-9.]/, "", throttle_max)
+            }
+        }
+    }
     END {
         # Guard: if no data was parsed, print a clear warning
         if (records_sent == "") {
@@ -201,9 +221,14 @@ parse_producer_output() {
             print "         Check the raw log file in the raw/ directory."         > "/dev/stderr"
         }
 
+        # Default throttle values if not present (--print-metrics not used)
+        if (throttle_avg == "") throttle_avg = "N/A"
+        if (throttle_max == "") throttle_max = "N/A"
+
         # Append CSV row
         print timestamp "," topic "," partitions "," rf "," num_records "," record_size "," \
-              throughput "," avg "," max "," p50 "," p95 "," p99 "," p999 "," rps \
+              throughput "," avg "," max "," p50 "," p95 "," p99 "," p999 "," rps "," \
+              throttle_avg "," throttle_max \
               >> result_file
 
         # Human-readable display
@@ -214,6 +239,8 @@ parse_producer_output() {
         print "Avg Latency: "     avg " ms"
         print "Max Latency: "     max " ms"
         print "P50/P95/P99/P99.9: " p50 "/" p95 "/" p99 "/" p999 " ms"
+        print "Throttle Avg: "    throttle_avg " ms"
+        print "Throttle Max: "    throttle_max " ms"
     }
     '
 }
@@ -230,6 +257,12 @@ run_producer_test() {
     local raw_output_file="${RAW_DIR}/${topic}_${TIMESTAMP}.log"
     local output=""
 
+    local metrics_flag=""
+    if [ "$PRINT_METRICS" = "true" ]; then
+        metrics_flag="--print-metrics"
+        print_info "Metrics collection enabled (includes throttle metrics)"
+    fi
+
     if [ -n "$CLIENT_CONFIG" ] && [ -f "$CLIENT_CONFIG" ]; then
         print_info "Using producer config: $CLIENT_CONFIG"
         output=$("$kafka_bin/kafka-producer-perf-test.sh" \
@@ -237,6 +270,7 @@ run_producer_test() {
             --num-records "$NUM_RECORDS" \
             --record-size "$RECORD_SIZE" \
             --throughput -1 \
+            $metrics_flag \
             --producer.config "$CLIENT_CONFIG" 2>&1 | tee "$raw_output_file")
     else
         output=$("$kafka_bin/kafka-producer-perf-test.sh" \
@@ -244,6 +278,7 @@ run_producer_test() {
             --num-records "$NUM_RECORDS" \
             --record-size "$RECORD_SIZE" \
             --throughput -1 \
+            $metrics_flag \
             --producer-props bootstrap.servers="$BOOTSTRAP_SERVERS" acks=1 2>&1 | tee "$raw_output_file")
     fi
 
@@ -277,23 +312,25 @@ generate_report() {
         printf "\nRESULTS SUMMARY\n"
         printf "===============\n\n"
 
-        tail -n +2 "$RESULT_FILE" | while IFS=',' read -r ts topic part rf num_rec rec_size throughput avg_lat max_lat p50 p95 p99 p999 rps; do
+        tail -n +2 "$RESULT_FILE" | while IFS=',' read -r ts topic part rf num_rec rec_size throughput avg_lat max_lat p50 p95 p99 p999 rps throttle_avg throttle_max; do
             printf "Topic: %s (Partitions: %s, RF: %s)\n" "$topic" "$part" "$rf"
             printf "  Throughput:    %s MB/sec\n" "$throughput"
             printf "  Records/sec:   %s\n" "$rps"
             printf "  Avg Latency:   %s ms\n" "$avg_lat"
-            printf "  P50/P95/P99:   %s/%s/%s ms\n\n" "$p50" "$p95" "$p99"
+            printf "  P50/P95/P99:   %s/%s/%s ms\n" "$p50" "$p95" "$p99"
+            printf "  Throttle Avg:  %s ms\n" "$throttle_avg"
+            printf "  Throttle Max:  %s ms\n\n" "$throttle_max"
         done
 
         printf "PERFORMANCE RANKING (by Throughput)\n"
         printf "====================================\n"
-        tail -n +2 "$RESULT_FILE" | sort -t',' -k7 -rn | while IFS=',' read -r ts topic part rf num_rec rec_size throughput avg_lat max_lat p50 p95 p99 p999 rps; do
+        tail -n +2 "$RESULT_FILE" | sort -t',' -k7 -rn | while IFS=',' read -r ts topic part rf num_rec rec_size throughput avg_lat max_lat p50 p95 p99 p999 rps throttle_avg throttle_max; do
             printf "  %s: %s MB/sec\n" "$topic" "$throughput"
         done
 
         printf "\nLOWEST LATENCY (by Avg Latency)\n"
         printf "================================\n"
-        tail -n +2 "$RESULT_FILE" | sort -t',' -k8 -n | while IFS=',' read -r ts topic part rf num_rec rec_size throughput avg_lat max_lat p50 p95 p99 p999 rps; do
+        tail -n +2 "$RESULT_FILE" | sort -t',' -k8 -n | while IFS=',' read -r ts topic part rf num_rec rec_size throughput avg_lat max_lat p50 p95 p99 p999 rps throttle_avg throttle_max; do
             printf "  %s: %s ms\n" "$topic" "$avg_lat"
         done
 
@@ -347,12 +384,13 @@ generate_html_report() {
         <h2>📊 Detailed Results</h2>
         <table>
             <thead>
-                <tr><th>Topic</th><th>Partitions</th><th>RF</th><th>Throughput (MB/s)</th><th>Records/sec</th><th>Avg Latency (ms)</th><th>P99 (ms)</th></tr>
+                <tr><th>Topic</th><th>Partitions</th><th>RF</th><th>Throughput (MB/s)</th><th>Records/sec</th><th>Avg Latency (ms)</th><th>P99 (ms)</th><th>Throttle Avg (ms)</th><th>Throttle Max (ms)</th></tr>
             </thead>
             <tbody id="resultsBody"></tbody>
         </table>
         <div class="chart" id="throughputChart"></div>
         <div class="chart" id="latencyChart"></div>
+        <div class="chart" id="throttleChart"></div>
         <div class="chart" id="percentileChart"></div>
     </div>
     <script>
@@ -374,7 +412,9 @@ CSV_DATA_PLACEHOLDER
                     p95:          parseFloat(v[10]),
                     p99:          parseFloat(v[11]),
                     p999:         parseFloat(v[12]),
-                    rps:          parseFloat(v[13])
+                    rps:          parseFloat(v[13]),
+                    throttle_avg: v[14] === 'N/A' ? null : parseFloat(v[14]),
+                    throttle_max: v[15] === 'N/A' ? null : parseFloat(v[15])
                 };
             });
         }
@@ -398,6 +438,7 @@ CSV_DATA_PLACEHOLDER
             const tbody = document.getElementById('resultsBody');
             data.forEach(row => {
                 const tr = document.createElement('tr');
+                const fmtThrottle = (v) => v !== null ? v.toFixed(3) : 'N/A';
                 tr.innerHTML = `
                     <td>${row.topic}</td>
                     <td>${row.partitions}</td>
@@ -406,6 +447,8 @@ CSV_DATA_PLACEHOLDER
                     <td>${row.rps.toFixed(0)}</td>
                     <td class="${row.avg_latency===minLat?'best':''}">${row.avg_latency.toFixed(2)}</td>
                     <td>${row.p99.toFixed(2)}</td>
+                    <td>${fmtThrottle(row.throttle_avg)}</td>
+                    <td>${fmtThrottle(row.throttle_max)}</td>
                 `;
                 tbody.appendChild(tr);
             });
@@ -422,6 +465,15 @@ CSV_DATA_PLACEHOLDER
                 { x: data.map(d=>d.topic), y: data.map(d=>d.avg_latency), name:'Avg', type:'bar', marker:{color:'#667eea'} },
                 { x: data.map(d=>d.topic), y: data.map(d=>d.p99),         name:'P99', type:'bar', marker:{color:'#764ba2'} }
             ], { title: 'Latency Comparison (ms)', barmode:'group', xaxis:{title:'Topic'}, yaxis:{title:'ms'}, height:400 });
+
+            // Throttle bar chart
+            const throttleData = data.filter(d => d.throttle_avg !== null);
+            if (throttleData.length > 0) {
+                Plotly.newPlot('throttleChart', [
+                    { x: throttleData.map(d=>d.topic), y: throttleData.map(d=>d.throttle_avg), name:'Avg Throttle', type:'bar', marker:{color:'#e74c3c'} },
+                    { x: throttleData.map(d=>d.topic), y: throttleData.map(d=>d.throttle_max), name:'Max Throttle', type:'bar', marker:{color:'#c0392b'} }
+                ], { title: 'Producer Throttle Time (ms)', barmode:'group', xaxis:{title:'Topic'}, yaxis:{title:'ms'}, height:400 });
+            }
 
             // Percentile lines
             Plotly.newPlot('percentileChart', [
